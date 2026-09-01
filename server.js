@@ -1485,7 +1485,7 @@ class YahooMailMCPServer {
             }
 
             // Validate credentials
-            if (reqClientId !== clientId || reqClientSecret !== clientSecret) {
+            if (reqClientId !== clientId || (reqClientSecret && reqClientSecret !== clientSecret)) {
                 console.error('[OAuth] Authentication failed - invalid client credentials');
                 return res.status(401).json({
                     error: 'invalid_client',
