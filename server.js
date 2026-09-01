@@ -11,6 +11,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import Imap from 'imap';
 import { simpleParser } from 'mailparser';
+import nodemailer from 'nodemailer';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -303,6 +304,32 @@ class YahooMailMCPServer {
                             type: 'object',
                             properties: {}
                         }
+                    },
+                    {
+                        name: 'send_email',
+                        description: 'Send an email from your Yahoo Mail account via SMTP, using the same app-password credentials as the IMAP tools. Useful for delivering summaries or digests to your own inbox or someone else.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                to: {
+                                    type: 'string',
+                                    description: 'Recipient email address. Defaults to your own Yahoo address (YAHOO_EMAIL) if omitted.'
+                                },
+                                subject: {
+                                    type: 'string',
+                                    description: 'Subject line of the email'
+                                },
+                                body: {
+                                    type: 'string',
+                                    description: 'Plain-text body of the email'
+                                },
+                                html: {
+                                    type: 'string',
+                                    description: 'Optional HTML body of the email. If provided, it is sent alongside the plain-text body.'
+                                }
+                            },
+                            required: ['subject', 'body']
+                        }
                     }
                 ]
             };
@@ -353,6 +380,9 @@ class YahooMailMCPServer {
 
                     case 'list_folders':
                         return await this.listFolders();
+
+                    case 'send_email':
+                        return await this.sendEmail(args?.to || process.env.YAHOO_EMAIL, args.subject, args.body, args?.html);
 
                     default:
                         throw new Error(`Unknown tool: ${name}`);
@@ -1222,6 +1252,60 @@ class YahooMailMCPServer {
         });
     }
 
+    /**
+     * Create SMTP transport using the same app-specific password as IMAP
+     */
+    createSmtpTransport() {
+        if (!process.env.YAHOO_EMAIL || !process.env.YAHOO_APP_PASSWORD) {
+            throw new Error('YAHOO_EMAIL or YAHOO_APP_PASSWORD environment variables are not set');
+        }
+
+        return nodemailer.createTransport({
+            host: 'smtp.mail.yahoo.com',
+            port: 465,
+            secure: true,
+            auth: {
+                user: process.env.YAHOO_EMAIL,
+                pass: process.env.YAHOO_APP_PASSWORD
+            },
+            tls: {
+                minVersion: 'TLSv1.2'
+            }
+        });
+    }
+
+    /**
+     * Send an email via SMTP
+     */
+    async sendEmail(to, subject, text, html) {
+        if (!subject || !text) {
+            throw new Error('subject and body are required');
+        }
+
+        const transporter = this.createSmtpTransport();
+        const recipient = to || process.env.YAHOO_EMAIL;
+
+        const info = await transporter.sendMail({
+            from: process.env.YAHOO_EMAIL,
+            to: recipient,
+            subject,
+            text,
+            ...(html ? { html } : {})
+        });
+
+        return {
+            content: [{
+                type: 'text',
+                text: JSON.stringify({
+                    success: true,
+                    messageId: info.messageId,
+                    to: recipient,
+                    subject
+                }, null, 2)
+            }]
+        };
+    }
+
     setupErrorHandling() {
         this.server.onerror = (error) => {
             console.error('[MCP Error]', error);
@@ -1674,6 +1758,7 @@ class YahooMailMCPServer {
                 },
                 tools: [
                     'list_emails',
+                    'send_email',
                     'read_email',
                     'search_emails',
                     'delete_emails',
