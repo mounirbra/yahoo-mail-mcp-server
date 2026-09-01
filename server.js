@@ -1255,55 +1255,74 @@ class YahooMailMCPServer {
     /**
      * Create SMTP transport using the same app-specific password as IMAP
      */
-    createSmtpTransport() {
+    createSmtpTransport(useStartTls = false) {
         if (!process.env.YAHOO_EMAIL || !process.env.YAHOO_APP_PASSWORD) {
             throw new Error('YAHOO_EMAIL or YAHOO_APP_PASSWORD environment variables are not set');
         }
 
         return nodemailer.createTransport({
             host: 'smtp.mail.yahoo.com',
-            port: 465,
-            secure: true,
+            port: useStartTls ? 587 : 465,
+            secure: !useStartTls,
+            requireTLS: useStartTls,
             auth: {
                 user: process.env.YAHOO_EMAIL,
                 pass: process.env.YAHOO_APP_PASSWORD
             },
             tls: {
                 minVersion: 'TLSv1.2'
-            }
+            },
+            connectionTimeout: 15000,
+            greetingTimeout: 15000,
+            socketTimeout: 15000
         });
     }
 
     /**
-     * Send an email via SMTP
+     * Send an email via SMTP, trying port 465 (implicit TLS) then falling back
+     * to port 587 (STARTTLS) if the first attempt fails or times out.
      */
     async sendEmail(to, subject, text, html) {
         if (!subject || !text) {
             throw new Error('subject and body are required');
         }
 
-        const transporter = this.createSmtpTransport();
         const recipient = to || process.env.YAHOO_EMAIL;
-
-        const info = await transporter.sendMail({
+        const mailOptions = {
             from: process.env.YAHOO_EMAIL,
             to: recipient,
             subject,
             text,
             ...(html ? { html } : {})
-        });
-
-        return {
-            content: [{
-                type: 'text',
-                text: JSON.stringify({
-                    success: true,
-                    messageId: info.messageId,
-                    to: recipient,
-                    subject
-                }, null, 2)
-            }]
         };
+
+        let lastError;
+        for (const useStartTls of [false, true]) {
+            const label = useStartTls ? '587/STARTTLS' : '465/TLS';
+            try {
+                console.log(`[send_email] Attempting SMTP via ${label}...`);
+                const transporter = this.createSmtpTransport(useStartTls);
+                const info = await transporter.sendMail(mailOptions);
+                console.log(`[send_email] Success via ${label}: ${info.messageId}`);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: true,
+                            messageId: info.messageId,
+                            to: recipient,
+                            subject,
+                            transport: label
+                        }, null, 2)
+                    }]
+                };
+            } catch (err) {
+                console.error(`[send_email] Failed via ${label}: ${err.message}`);
+                lastError = err;
+            }
+        }
+
+        throw new Error(`Failed to send email via SMTP (tried 465 and 587): ${lastError?.message}`);
     }
 
     setupErrorHandling() {
